@@ -43,6 +43,7 @@ ENV ANTSPATH="/opt/ants/bin" \
 
 FROM ubuntu:20.04
 
+# Modified: Added jq to the list of packages to install.
 RUN apt-get update && apt-get install -y \
     build-essential \
     git \
@@ -56,9 +57,9 @@ RUN apt-get update && apt-get install -y \
     unzip \
     bc \
     zlib1g-dev \
-    wget &&\
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    wget \
+    jq \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 #fsl
 RUN wget https://fsl.fmrib.ox.ac.uk/fsldownloads/fslinstaller.py && \
@@ -73,12 +74,10 @@ RUN wget -O c3d-1.0.0-Linux-x86_64.tar.gz "https://downloads.sourceforge.net/pro
 RUN wget https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/6.0.0/freesurfer-Linux-centos6_x86_64-stable-pub-v6.0.0.tar.gz && \
     tar -C /opt -xzvf freesurfer-Linux-centos6_x86_64-stable-pub-v6.0.0.tar.gz && \
     echo "This is a dummy license file. Please bind your freesurfer license file to this file." > /opt/freesurfer/license.txt &&\
-    rm freesurfer-Linux-centos6_x86_64-stable-pub-v6.0.0.tar.gz && \
-    cd /
+    rm freesurfer-Linux-centos6_x86_64-stable-pub-v6.0.0.tar.gz && cd /
 
 # miniconda
 ENV PATH="/opt/miniconda3/bin:${PATH}"
-
 RUN wget https://repo.anaconda.com/miniconda/Miniconda3-py310_23.1.0-1-Linux-x86_64.sh && \
     mkdir /opt/.conda && \
     bash Miniconda3-py310_23.1.0-1-Linux-x86_64.sh -b -p /opt/miniconda3 && \
@@ -96,17 +95,13 @@ COPY --from=builder /opt/ants /opt/ants
 
 ENV FSLDIR=/opt/fsl
 ENV PATH=${FSLDIR}/bin:${PATH}
-
 ENV ANTSPATH="/opt/ants/bin" \
     PATH="/opt/ants/bin:$PATH" \
     LD_LIBRARY_PATH="/opt/ants/lib:$LD_LIBRARY_PATH"
-
 ENV PATH="/opt/c3d-1.0.0-Linux-x86_64/bin:$PATH"
-
 ENV FREESURFER_HOME=/opt/freesurfer
 
-RUN mkdir /INPUTS && \
-    mkdir /OUTPUTS
+RUN mkdir /INPUTS && mkdir /OUTPUTS
 
 COPY src /home
 
