@@ -1,20 +1,26 @@
 #!/bin/bash
 
+# Redirect all output to output.log
 exec &> /OUTPUTS/output.log
 
+# Default parameters
 total_readout_time=0.05
-
 TOPUP=true
 motion_corrected=false
 skull_stripped=false
 custom_cnf=false
 no_smoothing=false
 
+# Default filenames (if not overridden by flags)
+T1_FILE="T1.nii.gz"
+BOLD_FILE="BOLD_d.nii.gz"
+
 echo "Flag(s) received:"
 if [ $# -eq 0 ]; then
     echo "  None"
 fi
 
+# Process command-line arguments
 for ((i=1; i<=$#; i++)); do
     arg="${!i}"
     echo "  $arg"
@@ -44,6 +50,24 @@ for ((i=1; i<=$#; i++)); do
                 exit 1
             fi
             ;;
+        --T1)
+            ((i++))
+            if [ $i -le $# ]; then
+                T1_FILE="${!i}"
+            else
+                echo "Error: Missing value for --T1"
+                exit 1
+            fi
+            ;;
+        --BOLD)
+            ((i++))
+            if [ $i -le $# ]; then
+                BOLD_FILE="${!i}"
+            else
+                echo "Error: Missing value for --BOLD"
+                exit 1
+            fi
+            ;;
     esac
 done
 
@@ -54,26 +78,29 @@ echo "  Skull Stripped: $skull_stripped"
 echo "  Custom Cnf: $custom_cnf"
 echo "  No Smoothing: $no_smoothing"
 echo "  Total Readout Time: $total_readout_time"
+echo "  T1 file: $T1_FILE"
+echo "  BOLD file: $BOLD_FILE"
 
-# setup freesurfer
+# setup freesurfer and conda environment
 source $FREESURFER_HOME/SetUpFreeSurfer.sh
 source activate /opt/miniconda3
 
 cd /INPUTS
 
-# check file existence
-if [ ! -f T1.nii.gz ]; then
-    echo "T1.nii.gz not found"
+# Check file existence for the provided filenames
+if [ ! -f "$T1_FILE" ]; then
+    echo "Error: T1 file '$T1_FILE' not found in /INPUTS"
     exit 1
 fi
 
-if [ ! -f BOLD_d.nii.gz ]; then
-    echo "BOLD_d.nii.gz not found"
+if [ ! -f "$BOLD_FILE" ]; then
+    echo "Error: BOLD file '$BOLD_FILE' not found in /INPUTS"
     exit 1
 fi
 
+# If using a custom .cnf file, check that exactly one exists
 if $custom_cnf; then
-    count=$(ls /INPUTS/*.cnf | grep -c '.cnf')
+    count=$(ls /INPUTS/*.cnf 2>/dev/null | wc -l)
     if [ $count -ne 1 ]; then
         echo "Error: Expected 1 .cnf file, found $count."
         exit 1
@@ -83,7 +110,8 @@ fi
 INPUTS_PATH=/INPUTS
 RESULTS_PATH=/OUTPUTS
 
-if [ $skull_stripped ]; then
+# Define atlas paths based on whether T1 is already skull-stripped
+if $skull_stripped; then
     T1_ATLAS_PATH=/home/mni_icbm152_t1_tal_nlin_asym_09c_mask.nii.gz
     T1_ATLAS_2_5_PATH=/home/mni_icbm152_t1_tal_nlin_asym_09c_mask_2_5.nii.gz
 else
@@ -92,167 +120,153 @@ else
 fi
 
 model_path=/home/Models
-T1_PATH=$INPUTS_PATH/T1.nii.gz
-BOLD_PATH=$RESULTS_PATH/BOLD_d.nii.gz
-BOLD_d_mc=$RESULTS_PATH/BOLD_d_mc.nii.gz
-BOLD_d_3D=$RESULTS_PATH/BOLD_d_3D.nii.gz
+T1_PATH="$INPUTS_PATH/$T1_FILE"
 
-# always use sform
-cp BOLD_d.nii.gz $BOLD_PATH
-if [[ $(fslorient -getsformcode $BOLD_PATH) -eq 1 ]] && [[ $(fslorient -getqformcode $BOLD_PATH) -eq 1 ]]; then
-    fslorient -setqformcode 0 $BOLD_PATH
+# Copy BOLD file from INPUTS to OUTPUTS (renaming it internally to maintain workflow)
+cp "$INPUTS_PATH/$BOLD_FILE" "$RESULTS_PATH/BOLD_d.nii.gz"
+BOLD_PATH="$RESULTS_PATH/BOLD_d.nii.gz"
+
+# Determine the JSON sidecar for the BOLD image
+BOLD_JSON="${BOLD_FILE%.nii.gz}.json"
+if [ ! -f "$INPUTS_PATH/$BOLD_JSON" ]; then
+    echo "Error: JSON sidecar '$BOLD_JSON' not found in /INPUTS"
+    exit 1
 fi
 
-dimension=$(mrinfo $BOLD_PATH -ndim)
+# Extract the PhaseEncodingDirection from the JSON sidecar (requires jq)
+phase=$(jq -r '.PhaseEncodingDirection' "$INPUTS_PATH/$BOLD_JSON")
+if [ -z "$phase" ] || [ "$phase" = "null" ]; then
+    echo "Error: PhaseEncodingDirection not found in $BOLD_JSON"
+    exit 1
+fi
+echo "Extracted PhaseEncodingDirection: $phase"
 
+# Map BIDS PhaseEncodingDirection to acqparams vector
+case $phase in
+    i)   vector="1 0 0" ;;
+    i-)  vector="-1 0 0" ;;
+    j)   vector="0 1 0" ;;
+    j-)  vector="0 -1 0" ;;
+    k)   vector="0 0 1" ;;
+    k-)  vector="0 0 -1" ;;
+    *)
+       echo "Error: Unrecognized PhaseEncodingDirection '$phase'"
+       exit 1
+       ;;
+esac
+echo "Computed acqparams vector: $vector"
+
+BOLD_d_mc="$RESULTS_PATH/BOLD_d_mc.nii.gz"
+BOLD_d_3D="$RESULTS_PATH/BOLD_d_3D.nii.gz"
+
+# Use sform: if both sform and qform codes equal 1, then reset qform code to 0.
+if [[ $(fslorient -getsformcode "$BOLD_PATH") -eq 1 ]] && [[ $(fslorient -getqformcode "$BOLD_PATH") -eq 1 ]]; then
+    fslorient -setqformcode 0 "$BOLD_PATH"
+fi
+
+dimension=$(mrinfo "$BOLD_PATH" -ndim)
 if [[ $dimension -eq 3 ]]; then
-    cp $BOLD_PATH $BOLD_d_mc
-    cp $BOLD_d_mc $BOLD_d_3D
+    cp "$BOLD_PATH" "$BOLD_d_mc"
+    cp "$BOLD_d_mc" "$BOLD_d_3D"
 elif [[ $dimension -eq 4 ]]; then
     if $motion_corrected; then
-        cp $BOLD_PATH $BOLD_d_mc
-        mrmath $BOLD_d_mc mean $BOLD_d_3D -axis 3 -force
+        cp "$BOLD_PATH" "$BOLD_d_mc"
+        mrmath "$BOLD_d_mc" mean "$BOLD_d_3D" -axis 3 -force
     else
-        mcflirt -in $BOLD_PATH -meanvol -out $RESULTS_PATH/rBOLD -plots
-        mv $RESULTS_PATH/rBOLD.nii.gz $BOLD_d_mc
-        mv $RESULTS_PATH/rBOLD_mean_reg.nii.gz $BOLD_d_3D
+        mcflirt -in "$BOLD_PATH" -meanvol -out "$RESULTS_PATH/rBOLD" -plots
+        mv "$RESULTS_PATH/rBOLD.nii.gz" "$BOLD_d_mc"
+        mv "$RESULTS_PATH/rBOLD_mean_reg.nii.gz" "$BOLD_d_3D"
     fi
 else
-    echo "BOLD_d.nii.gz Incorrect Dimension"
+    echo "Error: BOLD_d.nii.gz has incorrect dimension"
+    exit 1
 fi
 
 # Normalize T1
-echo -------
-echo Normalizing T1
-mri_convert $T1_PATH ${RESULTS_PATH}/T1.mgz
-mri_nu_correct.mni --i ${RESULTS_PATH}/T1.mgz --o ${RESULTS_PATH}/T1_N3.mgz --n 2
-mri_convert ${RESULTS_PATH}/T1_N3.mgz ${RESULTS_PATH}/T1_N3.nii.gz
-mri_normalize -g 1 -mprage ${RESULTS_PATH}/T1_N3.mgz ${RESULTS_PATH}/T1_norm.mgz
-mri_convert ${RESULTS_PATH}/T1_norm.mgz ${RESULTS_PATH}/T1_norm.nii.gz
+echo "-------"
+echo "Normalizing T1"
+mri_convert "$T1_PATH" "${RESULTS_PATH}/T1.mgz"
+mri_nu_correct.mni --i "${RESULTS_PATH}/T1.mgz" --o "${RESULTS_PATH}/T1_N3.mgz" --n 2
+mri_convert "${RESULTS_PATH}/T1_N3.mgz" "${RESULTS_PATH}/T1_N3.nii.gz"
+mri_normalize -g 1 -mprage "${RESULTS_PATH}/T1_N3.mgz" "${RESULTS_PATH}/T1_norm.mgz"
+mri_convert "${RESULTS_PATH}/T1_norm.mgz" "${RESULTS_PATH}/T1_norm.nii.gz"
 
 # Skull strip T1
-echo -------
+echo "-------"
 if $skull_stripped; then
-    echo Copying user-provided T1 Mask
-    cp $T1_PATH ${RESULTS_PATH}/T1_mask.nii.gz
+    echo "Copying user-provided T1 Mask"
+    cp "$T1_PATH" "${RESULTS_PATH}/T1_mask.nii.gz"
 else
-    echo Skull stripping T1
-    bet $T1_PATH ${RESULTS_PATH}/T1_mask.nii.gz -R
+    echo "Skull stripping T1"
+    bet "$T1_PATH" "${RESULTS_PATH}/T1_mask.nii.gz" -R
 fi
 
-# epi_reg distorted BOLD to T1; wont be perfect since BOLD is distorted
-echo -------
-echo epi_reg distorted BOLD to T1
+# EPI registration: Register the distorted BOLD average to T1
+echo "-------"
+echo "epi_reg: Registering distorted BOLD to T1"
+epi_reg --epi="$BOLD_d_3D" --t1="$T1_PATH" --t1brain="${RESULTS_PATH}/T1_mask.nii.gz" --out="${RESULTS_PATH}/epi_reg_d"
 
-epi_reg \
-  --epi=$BOLD_d_3D \
-  --t1=$T1_PATH \
-  --t1brain=${RESULTS_PATH}/T1_mask.nii.gz \
-  --out=${RESULTS_PATH}/epi_reg_d
+# Convert FSL transform to ANTs format
+echo "-------"
+echo "Converting FSL transform to ANTs transform"
+c3d_affine_tool -ref "$T1_PATH" -src "$BOLD_d_3D" "${RESULTS_PATH}/epi_reg_d.mat" -fsl2ras -oitk "${RESULTS_PATH}/epi_reg_d_ANTS.txt"
 
-# Convert FSL transform to ANTS transform
-echo -------
-echo converting FSL transform to ANTS transform
-c3d_affine_tool \
-    -ref $T1_PATH \
-    -src $BOLD_d_3D ${RESULTS_PATH}/epi_reg_d.mat \
-    -fsl2ras \
-    -oitk ${RESULTS_PATH}/epi_reg_d_ANTS.txt
+# ANTs registration of T1 to atlas
+echo "-------"
+echo "Running ANTs registration"
+antsRegistrationSyNQuick.sh -d 3 -f "$T1_ATLAS_PATH" -m "$T1_PATH" -o "${RESULTS_PATH}/ANTS"
 
-# ANTs register T1 to atlas
-echo -------
-echo ANTS syn registration
-antsRegistrationSyNQuick.sh -d 3 -f $T1_ATLAS_PATH -m $T1_PATH -o ${RESULTS_PATH}/ANTS
+# Apply linear transforms to bring T1 and BOLD into atlas space
+echo "-------"
+echo "Applying linear transform to T1"
+antsApplyTransforms -d 3 -i "${RESULTS_PATH}/T1_norm.nii.gz" -r "$T1_ATLAS_2_5_PATH" -n BSpline -t "${RESULTS_PATH}/ANTS0GenericAffine.mat" -o "${RESULTS_PATH}/T1_norm_lin_atlas_2_5.nii.gz"
 
-# Apply linear transform to normalized T1 to get it into atlas space
-echo -------
-echo Apply linear transform to T1
-antsApplyTransforms \
-  -d 3 \
-  -i ${RESULTS_PATH}/T1_norm.nii.gz \
-  -r $T1_ATLAS_2_5_PATH \
-  -n BSpline \
-  -t ${RESULTS_PATH}/ANTS0GenericAffine.mat \
-  -o ${RESULTS_PATH}/T1_norm_lin_atlas_2_5.nii.gz
+echo "-------"
+echo "Applying linear transform to distorted BOLD"
+antsApplyTransforms -d 3 -i "$BOLD_d_3D" -r "$T1_ATLAS_2_5_PATH" -n BSpline -t "${RESULTS_PATH}/ANTS0GenericAffine.mat" -t "${RESULTS_PATH}/epi_reg_d_ANTS.txt" -o "${RESULTS_PATH}/BOLD_d_3D_lin_atlas_2_5.nii.gz"
 
-# Apply linear transform to N3 T1 to get it into atlas space
-echo -------
-echo Apply linear transform to T1 N3
-antsApplyTransforms \
-  -d 3 \
-  -i ${RESULTS_PATH}/T1_N3.nii.gz \
-  -r $T1_ATLAS_2_5_PATH \
-  -n BSpline \
-  -t ${RESULTS_PATH}/ANTS0GenericAffine.mat \
-  -o ${RESULTS_PATH}/T1_N3_lin_atlas_2_5.nii.gz
-
-# Apply linear transform to distorted BOLD to get it into atlas space
-echo -------
-echo Apply linear transform to distorted BOLD
-antsApplyTransforms \
-  -d 3 \
-  -i $BOLD_d_3D \
-  -r $T1_ATLAS_2_5_PATH \
-  -n BSpline \
-  -t ${RESULTS_PATH}/ANTS0GenericAffine.mat \
-  -t ${RESULTS_PATH}/epi_reg_d_ANTS.txt \
-  -o ${RESULTS_PATH}/BOLD_d_3D_lin_atlas_2_5.nii.gz
-
-cd $RESULTS_PATH
-# Run inference
+cd "$RESULTS_PATH"
+# Run inference for each fold (unchanged)
 NUM_FOLDS=5
-for i in $(seq 1 $NUM_FOLDS);
-do 
-  echo Performing inference on FOLD: "$i"
-  python3 /home/inference.py \
-        T1_norm_lin_atlas_2_5.nii.gz \
-        BOLD_d_3D_lin_atlas_2_5.nii.gz \
-        BOLD_s_3D_lin_atlas_2_5_FOLD_$i.nii.gz \
-        $model_path/num_fold_${i}_total_folds_5_seed_1_num_epochs_120_lr_0.0001_betas_\(0.9,\ 0.999\)_weight_decay_1e-05_num_epoch_*.pth
+for i in $(seq 1 $NUM_FOLDS); do 
+    echo "Performing inference on FOLD: $i"
+    python3 /home/inference.py T1_norm_lin_atlas_2_5.nii.gz BOLD_d_3D_lin_atlas_2_5.nii.gz BOLD_s_3D_lin_atlas_2_5_FOLD_$i.nii.gz $model_path/num_fold_${i}_total_folds_5_seed_1_num_epochs_120_lr_0.0001_betas_\(0.9,\ 0.999\)_weight_decay_1e-05_num_epoch_*.pth
 done
 
-# Take mean
-echo Taking ensemble average
+echo "Taking ensemble average"
 fslmerge -t BOLD_s_3D_lin_atlas_2_5_merged.nii.gz BOLD_s_3D_lin_atlas_2_5_FOLD_*.nii.gz
 fslmaths BOLD_s_3D_lin_atlas_2_5_merged.nii.gz -Tmean BOLD_s_3D_lin_atlas_2_5.nii.gz
 
-# Apply inverse xform to undistorted BOLD
-echo Applying inverse xform to undistorted BOLD
-antsApplyTransforms \
-  -d 3 \
-  -i BOLD_s_3D_lin_atlas_2_5.nii.gz \
-  -r $BOLD_d_3D \
-  -n BSpline \
-  -t [epi_reg_d_ANTS.txt,1] \
-  -t [ANTS0GenericAffine.mat,1] \
-  -o BOLD_s_3D.nii.gz
+echo "Applying inverse transform to undistorted BOLD"
+antsApplyTransforms -d 3 -i BOLD_s_3D_lin_atlas_2_5.nii.gz -r "$BOLD_d_3D" -n BSpline -t [epi_reg_d_ANTS.txt,1] -t [ANTS0GenericAffine.mat,1] -o BOLD_s_3D.nii.gz
 
-# Smooth image
+# Smooth image if not disabled
 if ! $no_smoothing; then
-    echo Applying slight smoothing to distorted BOLD
-    fslmaths $BOLD_d_3D -s 1.15 BOLD_d_3D_smoothed.nii.gz
+    echo "Applying slight smoothing to distorted BOLD"
+    fslmaths "$BOLD_d_3D" -s 1.15 BOLD_d_3D_smoothed.nii.gz
     fslmerge -t BOLD_all BOLD_d_3D_smoothed.nii.gz BOLD_s_3D.nii.gz
 else
-    fslmerge -t BOLD_all $BOLD_d_3D BOLD_s_3D.nii.gz
+    fslmerge -t BOLD_all "$BOLD_d_3D" BOLD_s_3D.nii.gz
 fi
 
+# If TOPUP is enabled, create acqparams.txt using the computed vector
 if $TOPUP; then
-    echo -e "0 1 0 ${total_readout_time}\n0 1 0 0" > acqparams.txt
+    echo "Creating acqparams.txt using vector: $vector"
+    echo -e "${vector} ${total_readout_time}\n${vector} 0" > acqparams.txt
 
-    data_matrix=($(mrinfo $BOLD_PATH -size))
+    data_matrix=($(mrinfo "$BOLD_PATH" -size))
     all_even=true
-
     for i in {0..2}; do
-        if (( $((data_matrix[i])) % 2 == 1 )); then
+        if (( ${data_matrix[i]} % 2 == 1 )); then
             all_even=false
-            echo "odd dimension detected"
+            echo "Odd dimension detected"
             break
         fi
     done
 
     if $custom_cnf; then
         cnf=$(ls /INPUTS/*.cnf | head -n 1)
-        cp $cnf .
+        cp "$cnf" .
     elif $all_even; then
         cnf=b02b0_2.cnf
         cp /opt/fsl/src/fsl-topup/flirtsch/b02b0_2.cnf .
@@ -261,29 +275,18 @@ if $TOPUP; then
         cp /opt/fsl/src/fsl-topup/flirtsch/b02b0_1.cnf .
     fi
 
-    topup -v \
-        --imain=BOLD_all.nii.gz \
-        --datain=acqparams.txt \
-        --config=${cnf} \
-        --iout=BOLD_all_topup \
-        --fout=topup_results_field \
-        --out=topup_results \
-         
-    applytopup --imain=$BOLD_d_mc \
-               --datain=acqparams.txt \
-               --inindex=1 \
-               --topup=topup_results \
-               --out=BOLD_u \
-               --method=jac
+    topup -v --imain=BOLD_all.nii.gz --datain=acqparams.txt --config=${cnf} --iout=BOLD_all_topup --fout=topup_results_field --out=topup_results
+
+    applytopup --imain="$BOLD_d_mc" --datain=acqparams.txt --inindex=1 --topup=topup_results --out=BOLD_u --method=jac
 
     dimension=$(mrinfo BOLD_u.nii.gz -ndim)
-    echo $dimension
+    echo "BOLD_u.nii.gz dimension: $dimension"
 
     if [[ $dimension -eq 4 ]]; then
         mrmath BOLD_u.nii.gz mean BOLD_u_3D.nii.gz -axis 3 -force
     elif [[ $dimension -eq 3 ]]; then
         cp BOLD_u.nii.gz BOLD_u_3D.nii.gz
     else
-        echo "BOLD_u.nii.gz doesn't have correct dimension"
+        echo "Error: BOLD_u.nii.gz has an unexpected dimension"
     fi
 fi
