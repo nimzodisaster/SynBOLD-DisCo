@@ -71,10 +71,10 @@ RUN wget -O c3d-1.0.0-Linux-x86_64.tar.gz "https://downloads.sourceforge.net/pro
     rm c3d-1.0.0-Linux-x86_64.tar.gz
 
 # freesurfer
-RUN wget https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/6.0.0/freesurfer-Linux-centos6_x86_64-stable-pub-v6.0.0.tar.gz && \
-    tar -C /opt -xzvf freesurfer-Linux-centos6_x86_64-stable-pub-v6.0.0.tar.gz && \
-    echo "This is a dummy license file. Please bind your freesurfer license file to this file." > /opt/freesurfer/license.txt &&\
-    rm freesurfer-Linux-centos6_x86_64-stable-pub-v6.0.0.tar.gz && cd /
+#RUN wget https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/6.0.0/freesurfer-Linux-centos6_x86_64-stable-pub-v6.0.0.tar.gz && \
+#    tar -C /opt -xzvf freesurfer-Linux-centos6_x86_64-stable-pub-v6.0.0.tar.gz && \
+#    echo "This is a dummy license file. Please bind your freesurfer license file to this file." > /opt/freesurfer/license.txt &&\
+#    rm freesurfer-Linux-centos6_x86_64-stable-pub-v6.0.0.tar.gz && cd /
 
 # miniconda
 ENV PATH="/opt/miniconda3/bin:${PATH}"
@@ -99,7 +99,7 @@ ENV ANTSPATH="/opt/ants/bin" \
     PATH="/opt/ants/bin:$PATH" \
     LD_LIBRARY_PATH="/opt/ants/lib:$LD_LIBRARY_PATH"
 ENV PATH="/opt/c3d-1.0.0-Linux-x86_64/bin:$PATH"
-ENV FREESURFER_HOME=/opt/freesurfer
+#ENV FREESURFER_HOME=/opt/freesurfer
 
 RUN mkdir /INPUTS && mkdir /OUTPUTS
 
