@@ -423,7 +423,8 @@ if $TOPUP; then
         --config=${cnf} \
         --iout=BOLD_all_topup \
         --fout=topup_results_field \
-        --out=topup_results
+        --out=topup_results \
+        --nthr=${ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS}
 
     applytopup \
         --imain="$BOLD_d_mc" \
