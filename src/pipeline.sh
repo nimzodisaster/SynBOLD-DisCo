@@ -118,6 +118,7 @@ echo "  BOLD file: $BOLD_FILE"
 # source $FREESURFER_HOME/SetUpFreeSurfer.sh
 source activate /opt/miniconda3  # for ANTs, FSL, etc.
 . ${FSLDIR}/etc/fslconf/fsl.sh
+export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS = `nproc`
 
 INPUTS_PATH=/INPUTS
 RESULTS_PATH=/OUTPUTS
@@ -256,7 +257,7 @@ echo "epi_reg: Registering distorted BOLD to T1"
 epi_reg --epi="$BOLD_d_3D" \
         --t1="$T1_N3" \
         --t1brain="${RESULTS_PATH}/T1_mask.nii.gz" \
-        --wmseg="${RESULTS_PATH}/fast_wm_mask.nii.gz"
+        --wmseg="${RESULTS_PATH}/fast_wm_mask.nii.gz" \
         --out="${RESULTS_PATH}/epi_reg_d"
 
 # Convert FSL transform to ANTs format
@@ -279,12 +280,50 @@ else
     T1_ATLAS_2_5_PATH=/home/mni_icbm152_t1_tal_nlin_asym_09c_2_5.nii.gz
 fi
 
-echo "Running ANTs registration (T1 -> MNI atlas)"
-antsRegistrationSyNQuick.sh \
-    -d 3 \
-    -f "$T1_ATLAS_PATH" \
-    -m "$T1_NORM" \
-    -o "${RESULTS_PATH}/ANTS"
+echo "Running ANTs affine registration (T1 -> MNI atlas)"
+antsRegistration \
+  --verbose 1 \
+  --dimensionality 3 \
+  --float 0 \
+  --collapse-output-transforms 1 \
+  --output [ \
+    ${RESULTS_PATH}/ANTS, \
+    ${RESULTS_PATH}/ANTSWarped.nii.gz \
+  ] \
+  --interpolation Linear \
+  --use-histogram-matching 0 \
+  --winsorize-image-intensities [0.005,0.995] \
+  --initial-moving-transform [ \
+    $T1_ATLAS_PATH, \
+    $T1_NORM, \
+    1 \
+  ] \
+  \
+  --transform Rigid[0.1] \
+  --metric MI[ \
+    $T1_ATLAS_PATH, \
+    $T1_NORM, \
+    1, \
+    32, \
+    Regular, \
+    0.25 \
+  ] \
+  --convergence [1000x500x250x0, 1e-6, 10] \
+  --shrink-factors 8x4x2x1 \
+  --smoothing-sigmas 3x2x1x0vox \
+  \
+  --transform Affine[0.1] \
+  --metric MI[ \
+    $T1_ATLAS_PATH, \
+    $T1_NORM, \
+    1, \
+    32, \
+    Regular, \
+    0.25 \
+  ] \
+  --convergence [1000x500x250x0, 1e-6, 10] \
+  --shrink-factors 8x4x2x1 \
+  --smoothing-sigmas 3x2x1x0vox
 
 # -----------------------------------------------------------------------------
 # Apply transforms to T1 and BOLD into atlas space
