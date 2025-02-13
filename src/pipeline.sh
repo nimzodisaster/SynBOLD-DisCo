@@ -118,7 +118,7 @@ echo "  BOLD file: $BOLD_FILE"
 # source $FREESURFER_HOME/SetUpFreeSurfer.sh
 source activate /opt/miniconda3  # for ANTs, FSL, etc.
 . ${FSLDIR}/etc/fslconf/fsl.sh
-export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS = `nproc`
+export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=$(nproc)
 
 INPUTS_PATH=/INPUTS
 RESULTS_PATH=/OUTPUTS
